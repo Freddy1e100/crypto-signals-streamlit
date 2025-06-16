@@ -1,72 +1,96 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime
+import datetime
+import matplotlib.pyplot as plt
 from binance.client import Client
-import ta
-import plotly.graph_objs as go
+from ta.trend import EMAIndicator
+from ta.momentum import RSIIndicator, StochRSIIndicator
 
+# Настройки Binance (публичные, без ключа)
+client = Client()
+
+# Пары и параметры
 PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "PAXGUSDT"]
+SYMBOL_NAMES = {
+    "BTCUSDT": "BTC/USDT",
+    "ETHUSDT": "ETH/USDT",
+    "SOLUSDT": "SOL/USDT",
+    "PAXGUSDT": "PAXG/USDT"
+}
+TIMEFRAME = "1h"
+LIMIT = 150
 
-def fetch_klines(symbol: str, interval='1h', limit=150):
-    client = Client()
-    klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
-    df = pd.DataFrame(klines, columns=[
-        'timestamp', 'open', 'high', 'low', 'close',
-        'volume', 'close_time', 'quote_asset_volume',
-        'number_of_trades', 'taker_buy_base_asset_volume',
-        'taker_buy_quote_asset_volume', 'ignore'
-    ])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)
-    df = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
-    return df
-
-def analyze(df):
-    df['EMA50'] = ta.trend.ema_indicator(close=df['close'], window=50)
-    df['RSI'] = ta.momentum.rsi(df['close'], window=14)
-    df['StochRSI'] = ta.momentum.stochrsi(df['close'], window=14)
-
-    latest = df.iloc[-1]
-    signal = 'WAIT'
-    if latest['RSI'] < 30 and latest['StochRSI'] < 0.2:
-        signal = 'LONG'
-    elif latest['RSI'] > 70 and latest['StochRSI'] > 0.8:
-        signal = 'SHORT'
-
-    entry_price = latest['close']
-    stop_loss = entry_price * (0.97 if signal == 'LONG' else 1.03)
-    take_profit = entry_price * (1.05 if signal == 'LONG' else 0.95)
-
-    return signal, entry_price, stop_loss, take_profit
-
-def plot_chart(df, symbol):
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=df.index,
-                                 open=df['open'],
-                                 high=df['high'],
-                                 low=df['low'],
-                                 close=df['close'],
-                                 name='Candles'))
-    fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], mode='lines', name='EMA50'))
-    st.plotly_chart(fig, use_container_width=True)
-
+# Заголовок Streamlit
 st.title("📈 Крипто-сигналы (Binance)")
-st.write("Получай простые технические сигналы по ключевым парам.")
+st.markdown("Получай простые технические сигналы по ключевым парам.")
 
-for pair in PAIRS:
-    st.subheader(pair.replace('USDT', '/USDT'))
+# Функция получения исторических данных
+def get_binance_data(symbol, interval="1h", limit=150):
     try:
-        df = fetch_klines(pair)
-        df = df.dropna()
-        if len(df) < 100:
-            st.error("❌ Недостаточно данных")
-            continue
-        plot_chart(df, pair)
-        signal, price, sl, tp = analyze(df)
-        st.success(f"✅ Сигнал: **{signal}**")
-        st.write(f"⏱️ Время сигнала: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-        st.write(f"💰 Цена входа: {price:.2f}")
-        st.write(f"📍 Стоп: {sl:.2f} | Тейк: {tp:.2f}")
+        klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
+        df = pd.DataFrame(klines, columns=[
+            "Open Time", "Open", "High", "Low", "Close", "Volume",
+            "Close Time", "Quote Asset Volume", "Number of Trades",
+            "Taker Buy Base", "Taker Buy Quote", "Ignore"
+        ])
+        df["Open Time"] = pd.to_datetime(df["Open Time"], unit="ms")
+        df.set_index("Open Time", inplace=True)
+        df = df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
+        return df
     except Exception as e:
-        st.error(f"Ошибка: {str(e)}")
+        return None
+
+# Функция анализа и вывода сигналов
+def analyze(df, symbol):
+    try:
+        ema = EMAIndicator(close=df["Close"], window=50)
+        df["EMA50"] = ema.ema_indicator()
+
+        rsi = RSIIndicator(close=df["Close"])
+        df["RSI"] = rsi.rsi()
+
+        stoch = StochRSIIndicator(close=df["Close"])
+        df["StochRSI"] = stoch.stochrsi()
+
+        df.dropna(inplace=True)
+        last = df.iloc[-1]
+
+        signal = "⏸️ Нейтрально"
+        if last["RSI"] < 30 and last["StochRSI"] < 0.2 and last["Close"] > last["EMA50"]:
+            signal = "✅ LONG"
+        elif last["RSI"] > 70 and last["StochRSI"] > 0.8 and last["Close"] < last["EMA50"]:
+            signal = "🔻 SHORT"
+
+        entry_price = round(last["Close"], 2)
+        stop_loss = round(entry_price * (0.97 if signal == "✅ LONG" else 1.03), 2)
+        take_profit = round(entry_price * (1.03 if signal == "✅ LONG" else 0.97), 2)
+
+        # График
+        fig, ax = plt.subplots(figsize=(6, 3))
+        df["Close"].plot(ax=ax, label="Цена")
+        df["EMA50"].plot(ax=ax, label="EMA50")
+        ax.set_title(f"{SYMBOL_NAMES[symbol]} - Цена и EMA50")
+        ax.legend()
+        st.pyplot(fig)
+
+        # Сигнал
+        st.markdown(f"### {SYMBOL_NAMES[symbol]}")
+        st.write(f"{signal}")
+        st.write(f"⏱️ Время сигнала: {df.index[-1]}")
+        st.write(f"💰 Цена входа: {entry_price}")
+        st.write(f"📍 Стоп-лосс: {stop_loss}")
+        st.write(f"🎯 Тейк-профит: {take_profit}")
+
+    except Exception as e:
+        st.markdown(f"### {SYMBOL_NAMES[symbol]}")
+        st.error(f"Ошибка: {e}")
+
+# Основной вывод
+for pair in PAIRS:
+    df = get_binance_data(pair, interval=TIMEFRAME, limit=LIMIT)
+    if df is None or len(df) < 60:
+        st.markdown(f"### {SYMBOL_NAMES[pair]}")
+        st.error("❌ Недостаточно данных")
+    else:
+        analyze(df, pair)
