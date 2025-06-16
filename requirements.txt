@@ -1,0 +1,6 @@
+streamlit
+ta
+pandas
+numpy
+python-binance
+plotly
