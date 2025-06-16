@@ -1,7 +1,0 @@
-streamlit
-ta
-pandas
-numpy
-requests
-python-binance
-plotly
